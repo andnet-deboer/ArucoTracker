@@ -54,7 +54,7 @@ class ArucoNode(Node):
             "image_topic").get_parameter_value().string_value
         info_topic = self.get_parameter(
             "camera_info_topic").get_parameter_value().string_value
-        
+
         self.get_logger().info(f"Marker size: {self.marker_size}")
         self.get_logger().info(f"Dictionary: {dict_name}")
         self.get_logger().info(f"Image topic: {image_topic}")
@@ -142,7 +142,7 @@ class ArucoNode(Node):
                 return
         cv2.imshow('camera', cv_image)
         cv2.waitKey(1)
-        
+
         for i, marker_id in enumerate(ids):
             pose = Pose()
             pose.position.x = float(tvecs[i][0][0])
