@@ -10,7 +10,7 @@ import cv2
 import tf_transformations
 from sensor_msgs.msg import CameraInfo, Image
 from geometry_msgs.msg import PoseArray, Pose, TransformStamped
-from easy_handeye2_msgs.msg import ArucoMarkers
+from aruco_tracker_msgs.msg import ArucoMarkers
 from rcl_interfaces.msg import ParameterDescriptor, ParameterType
 from tf2_ros import TransformBroadcaster
 
@@ -40,9 +40,11 @@ class ArucoNode(Node):
 
         # Subscriptions and publishers
         self.create_subscription(CameraInfo, info_topic, self.info_callback, qos_profile_sensor_data)
-        self.create_subscription(Image, image_topic, self.image_callback, qos_profile_sensor_data)
+        self.create_subscription(Image, image_topic, self.image_callback, 100)
+        # self.create_subscription(Image, image_topic, self.image_callback, qos_profile_sensor_data)
         self.poses_pub = self.create_publisher(PoseArray, "aruco_poses", 10)
         self.markers_pub = self.create_publisher(ArucoMarkers, "aruco_markers", 10)
+        self.image_pub = self.create_publisher(Image, 'processed_image', 10)
         self.tf_broadcaster = TransformBroadcaster(self)
 
         # Camera and ArUco
@@ -65,6 +67,7 @@ class ArucoNode(Node):
         self.distortion = np.array(self.info_msg.d)
 
     def image_callback(self, img_msg):
+        self.get_logger().info("publishing")
         if self.info_msg is None:
             return
         
@@ -78,8 +81,7 @@ class ArucoNode(Node):
         # Detect markers
         corners, ids, rejected = cv2.aruco.detectMarkers(gray, self.aruco_dict, parameters=self.aruco_params)
         
-        if ids is None or len(ids) == 0:
-            return
+        
 
         # Estimate poses
         rvecs, tvecs, _ = cv2.aruco.estimatePoseSingleMarkers(
@@ -89,10 +91,17 @@ class ArucoNode(Node):
         markers = ArucoMarkers()
         pose_array = PoseArray()
         markers.header.frame_id = self.camera_frame
-        pose_array.header.frame_id = self.camera_frame
         markers.header.stamp = img_msg.header.stamp
-        pose_array.header.stamp = img_msg.header.stamp
 
+        pose_array.header.frame_id = self.camera_frame
+        pose_array.header.stamp = img_msg.header.stamp
+        cv2.aruco.drawDetectedMarkers(cv_image, corners, ids)
+        # self.image_pub.publish(cv_image)
+        
+        cv2.imshow('camera', cv_image)
+        cv2.waitKey(1)
+        if ids is None or len(ids) == 0:
+            return
         for i, marker_id in enumerate(ids):
             pose = Pose()
             pose.position.x = float(tvecs[i][0][0])
@@ -112,14 +121,13 @@ class ArucoNode(Node):
             pose_array.poses.append(pose)
             markers.poses.append(pose)
             markers.marker_ids.append(int(marker_id[0]))
+            self.get_logger().info(f"Detected {len(ids)} markers: {ids.flatten().tolist()}")
 
             if self.publish_tf:
                 self._publish_transform(pose, marker_id[0], markers.header.frame_id, img_msg.header.stamp)
 
         self.poses_pub.publish(pose_array)
         self.markers_pub.publish(markers)
-        self.get_logger().info(f"Detected {len(ids)} markers: {ids.flatten().tolist()}")
-
     def _publish_transform(self, pose, marker_id, frame_id, stamp):
         transform = TransformStamped()
         transform.header.stamp = stamp
