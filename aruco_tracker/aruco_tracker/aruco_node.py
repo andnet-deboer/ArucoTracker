@@ -44,7 +44,6 @@ class ArucoNode(Node):
         # self.create_subscription(Image, image_topic, self.image_callback, qos_profile_sensor_data)
         self.poses_pub = self.create_publisher(PoseArray, "aruco_poses", 10)
         self.markers_pub = self.create_publisher(ArucoMarkers, "aruco_markers", 10)
-        self.image_pub = self.create_publisher(Image, 'processed_image', 10)
         self.tf_broadcaster = TransformBroadcaster(self)
 
         # Camera and ArUco
@@ -84,9 +83,7 @@ class ArucoNode(Node):
         
 
         # Estimate poses
-        rvecs, tvecs, _ = cv2.aruco.estimatePoseSingleMarkers(
-            corners, self.marker_size, self.intrinsic_mat, self.distortion)
-
+        
         # Publish results
         markers = ArucoMarkers()
         pose_array = PoseArray()
@@ -96,8 +93,17 @@ class ArucoNode(Node):
         pose_array.header.frame_id = self.camera_frame
         pose_array.header.stamp = img_msg.header.stamp
         cv2.aruco.drawDetectedMarkers(cv_image, corners, ids)
-        # self.image_pub.publish(cv_image)
         
+        rvecs, tvecs, _ = cv2.aruco.estimatePoseSingleMarkers(
+            corners, self.marker_size, self.intrinsic_mat, self.distortion)
+        self.get_logger().info(f"Rvecs: \n{rvecs}")
+        if rvecs is not None:
+            cv2.drawFrameAxes(cv_image,
+                              self.intrinsic_mat,
+                              self.distortion,
+                              rvecs[0],
+                              tvecs[0],
+                              self.marker_size * 0.5)
         cv2.imshow('camera', cv_image)
         cv2.waitKey(1)
         if ids is None or len(ids) == 0:
