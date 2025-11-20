@@ -40,7 +40,11 @@ class ArucoNode(Node):
         self.declare_parameter(
             "publish_tf", True, ParameterDescriptor(
                 type=ParameterType.PARAMETER_BOOL))
-
+        self.declare_parameter(
+            "marker_ids", [-1], ParameterDescriptor(
+                type=ParameterType.PARAMETER_INTEGER_ARRAY))
+        self.id_list = self.get_parameter(
+            'marker_ids').get_parameter_value().integer_array_value
         self.marker_size = self.get_parameter(
             "marker_size").get_parameter_value().double_value
         self.camera_frame = self.get_parameter(
@@ -58,7 +62,7 @@ class ArucoNode(Node):
         self.get_logger().info(f"Marker size: {self.marker_size}")
         self.get_logger().info(f"Dictionary: {dict_name}")
         self.get_logger().info(f"Image topic: {image_topic}")
-
+        self.get_logger().info(f"ID list is :\n {self.id_list}")
         # Subscriptions and publishers
         self.create_subscription(
             CameraInfo,
@@ -79,7 +83,6 @@ class ArucoNode(Node):
         self.intrinsic_mat = None
         self.distortion = None
         self.bridge = CvBridge()
-        self.id_list = [0, 10]
         try:
             dictionary_id = cv2.aruco.__getattribute__(dict_name)
             self.aruco_dict = cv2.aruco.Dictionary_get(dictionary_id)
