@@ -98,10 +98,9 @@ class ArucoNode(Node):
         self.distortion = np.array(self.info_msg.d)
 
     def image_callback(self, img_msg):
-        self.get_logger().info("publishing")
         if self.info_msg is None:
             return
-        
+
         try:
             cv_image = self.bridge.imgmsg_to_cv2(
                 img_msg, desired_encoding="bgr8")
@@ -125,11 +124,10 @@ class ArucoNode(Node):
         pose_array.header.stamp = img_msg.header.stamp
 
         cv2.aruco.drawDetectedMarkers(cv_image, corners, ids)
-        self.get_logger().info(f"corners: {corners}")
 
         rvecs, tvecs, _ = cv2.aruco.estimatePoseSingleMarkers(
             corners, self.marker_size, self.intrinsic_mat, self.distortion)
-        self.get_logger().info(f"Rvecs: \n{rvecs}")
+
         if rvecs is not None:
             cv2.drawFrameAxes(cv_image,
                               self.intrinsic_mat,
