@@ -58,11 +58,37 @@ class ArucoNode(Node):
             "image_topic").get_parameter_value().string_value
         info_topic = self.get_parameter(
             "camera_info_topic").get_parameter_value().string_value
+        
+        try:
+            dictionary_id = cv2.aruco.__getattribute__(dict_name)
+            self.aruco_dict = cv2.aruco.Dictionary_get(dictionary_id)
+            self.aruco_params = cv2.aruco.DetectorParameters_create()
+            
+            # MOVE ALL TUNING HERE - do it once, not every frame
+            self.aruco_params.adaptiveThreshWinSizeMin = 3
+            self.aruco_params.adaptiveThreshWinSizeMax = 23
+            self.aruco_params.adaptiveThreshWinSizeStep = 10
+            
+            # Corner refinement (MOST IMPORTANT FOR STABILITY)
+            self.aruco_params.cornerRefinementMethod = cv2.aruco.CORNER_REFINE_SUBPIX
+            self.aruco_params.cornerRefinementWinSize = 5
+            self.aruco_params.cornerRefinementMaxIterations = 100
+            self.aruco_params.cornerRefinementMinAccuracy = 0.01
+            
+            # Reduce false positives
+            self.aruco_params.minMarkerPerimeterRate = 0.05
+            self.aruco_params.maxMarkerPerimeterRate = 4.0
+            self.aruco_params.polygonalApproxAccuracyRate = 0.03
+            
+        except Exception as e:
+            self.get_logger().error(f"Failed to load dictionary {dict_name}: {e}")
+            raise
 
-        self.get_logger().info(f"Marker size: {self.marker_size}")
-        self.get_logger().info(f"Dictionary: {dict_name}")
-        self.get_logger().info(f"Image topic: {image_topic}")
-        self.get_logger().info(f"ID list is :\n {self.id_list}")
+
+        # self.get_logger().info(f"Marker size: {self.marker_size}")
+        # self.get_logger().info(f"Dictionary: {dict_name}")
+        # self.get_logger().info(f"Image topic: {image_topic}")
+        # self.get_logger().info(f"ID list is :\n {self.id_list}")
         # Subscriptions and publishers
         self.create_subscription(
             CameraInfo,
@@ -102,47 +128,45 @@ class ArucoNode(Node):
             return
 
         try:
-            cv_image = self.bridge.imgmsg_to_cv2(
-                img_msg, desired_encoding="bgr8")
+            cv_image = self.bridge.imgmsg_to_cv2(img_msg, desired_encoding="bgr8")
             gray = cv2.cvtColor(cv_image, cv2.COLOR_BGR2GRAY)
+            
+            # Simple preprocessing
+            gray = cv2.GaussianBlur(gray, (5, 5), 0)
+            
         except Exception as e:
             self.get_logger().error(f"Image conversion error: {e}")
             return
 
-        # Detect markers
-        corners, ids, rejected = cv2.aruco.detectMarkers(gray, self.aruco_dict,
-                                                         parameters=self.aruco_params)
+        # Detect markers (parameters already tuned in __init__)
+        corners, ids, rejected = cv2.aruco.detectMarkers(
+            gray, self.aruco_dict, parameters=self.aruco_params)
 
-        # Estimate poses
+        cv2.aruco.drawDetectedMarkers(cv_image, corners, ids)
+
+        if ids is None or len(ids) == 0:
+            cv2.imshow('camera', cv_image)
+            cv2.waitKey(1)
+            return
+
+        # Check ID list
+        for id in ids:
+            if id not in self.id_list and -1 not in self.id_list:
+                cv2.imshow('camera', cv_image)
+                cv2.waitKey(1)
+                return
+
+        # Estimate poses (corners are already refined by ArUco parameters)
+        rvecs, tvecs, _ = cv2.aruco.estimatePoseSingleMarkers(
+            corners, self.marker_size, self.intrinsic_mat, self.distortion)
+
         # Publish results
         markers = ArucoMarkers()
         pose_array = PoseArray()
         markers.header.frame_id = self.camera_frame
         markers.header.stamp = img_msg.header.stamp
-
         pose_array.header.frame_id = self.camera_frame
         pose_array.header.stamp = img_msg.header.stamp
-
-        cv2.aruco.drawDetectedMarkers(cv_image, corners, ids)
-
-        rvecs, tvecs, _ = cv2.aruco.estimatePoseSingleMarkers(
-            corners, self.marker_size, self.intrinsic_mat, self.distortion)
-
-        if rvecs is not None:
-            cv2.drawFrameAxes(cv_image,
-                              self.intrinsic_mat,
-                              self.distortion,
-                              rvecs[0],
-                              tvecs[0],
-                              self.marker_size * 0.5)
-        if ids is None or len(ids) == 0:
-            return
-        self.get_logger().info(f"Ids are: \n{ids}")
-        for id in ids:
-            if id not in self.id_list:
-                return
-        cv2.imshow('camera', cv_image)
-        cv2.waitKey(1)
 
         for i, marker_id in enumerate(ids):
             pose = Pose()
@@ -163,8 +187,10 @@ class ArucoNode(Node):
             pose_array.poses.append(pose)
             markers.poses.append(pose)
             markers.marker_ids.append(int(marker_id[0]))
-            self.get_logger().info(
-                f"Detected {len(ids)} markers: {ids.flatten().tolist()}")
+
+            # Draw axes for this marker
+            cv2.drawFrameAxes(cv_image, self.intrinsic_mat, self.distortion,
+                            rvecs[i][0], tvecs[i][0], self.marker_size * 0.5)
 
             if self.publish_tf:
                 self._publish_transform(
@@ -172,8 +198,12 @@ class ArucoNode(Node):
                     markers.header.frame_id,
                     img_msg.header.stamp)
 
+        cv2.imshow('camera', cv_image)
+        cv2.waitKey(1)
+        
         self.poses_pub.publish(pose_array)
         self.markers_pub.publish(markers)
+
 
     def _publish_transform(self, pose, marker_id, frame_id, stamp):
         transform = TransformStamped()
@@ -188,6 +218,7 @@ class ArucoNode(Node):
         transform.transform.rotation.z = pose.orientation.z
         transform.transform.rotation.w = pose.orientation.w
         self.tf_broadcaster.sendTransform(transform)
+        self.get_logger().info(f"Sending transform: {transform}")
 
 
 def main():
