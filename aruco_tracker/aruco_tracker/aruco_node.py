@@ -112,68 +112,72 @@ class ArucoNode(Node):
         # Detect markers
         corners, ids, rejected = cv2.aruco.detectMarkers(gray, self.aruco_dict,
                                                          parameters=self.aruco_params)
-
-        # Estimate poses
-        # Publish results
-        markers = ArucoMarkers()
-        pose_array = PoseArray()
-        markers.header.frame_id = self.camera_frame
-        markers.header.stamp = img_msg.header.stamp
-
-        pose_array.header.frame_id = self.camera_frame
-        pose_array.header.stamp = img_msg.header.stamp
-
-        cv2.aruco.drawDetectedMarkers(cv_image, corners, ids)
-
-        rvecs, tvecs, _ = cv2.aruco.estimatePoseSingleMarkers(
-            corners, self.marker_size, self.intrinsic_mat, self.distortion)
-
-        if rvecs is not None:
-            cv2.drawFrameAxes(cv_image,
-                              self.intrinsic_mat,
-                              self.distortion,
-                              rvecs[0],
-                              tvecs[0],
-                              self.marker_size * 0.5)
         if ids is None or len(ids) == 0:
             return
-        self.get_logger().info(f"Ids are: \n{ids}")
-        for id in ids:
-            if id not in self.id_list:
-                return
-        cv2.imshow('camera', cv_image)
-        cv2.waitKey(1)
-
         for i, marker_id in enumerate(ids):
-            pose = Pose()
-            pose.position.x = float(tvecs[i][0][0])
-            pose.position.y = float(tvecs[i][0][1])
-            pose.position.z = float(tvecs[i][0][2])
+            if marker_id in self.id_list:
 
-            # Convert rotation vector to quaternion
-            rot_matrix = np.eye(4)
-            rot_matrix[0:3, 0:3] = cv2.Rodrigues(rvecs[i][0])[0]
-            quat = tf_transformations.quaternion_from_matrix(rot_matrix)
+                # Estimate poses
+                # Publish results
+                markers = ArucoMarkers()
+                pose_array = PoseArray()
+                markers.header.frame_id = self.camera_frame
+                markers.header.stamp = img_msg.header.stamp
 
-            pose.orientation.x = float(quat[0])
-            pose.orientation.y = float(quat[1])
-            pose.orientation.z = float(quat[2])
-            pose.orientation.w = float(quat[3])
+                pose_array.header.frame_id = self.camera_frame
+                pose_array.header.stamp = img_msg.header.stamp
 
-            pose_array.poses.append(pose)
-            markers.poses.append(pose)
-            markers.marker_ids.append(int(marker_id[0]))
-            self.get_logger().info(
-                f"Detected {len(ids)} markers: {ids.flatten().tolist()}")
+                cv2.aruco.drawDetectedMarkers(cv_image, corners, ids)
+                self.get_logger().info(f'corners ')
 
-            if self.publish_tf:
-                self._publish_transform(
-                    pose, marker_id[0],
-                    markers.header.frame_id,
-                    img_msg.header.stamp)
+                rvecs, tvecs, _ = cv2.aruco.estimatePoseSingleMarkers(
+                    corners, self.marker_size, self.intrinsic_mat, self.distortion)
 
-        self.poses_pub.publish(pose_array)
-        self.markers_pub.publish(markers)
+                if rvecs is not None:
+                    cv2.drawFrameAxes(cv_image,
+                                    self.intrinsic_mat,
+                                    self.distortion,
+                                    rvecs[0],
+                                    tvecs[0],
+                                    self.marker_size * 0.5)
+        
+        # # self.get_logger().info(f"Ids are: \n{ids}")
+        # for id in ids:
+        #     if id not in self.id_list:
+        #         return
+                cv2.imshow('camera', cv_image)
+                cv2.waitKey(1)
+
+                for i, marker_id in enumerate(ids):
+                    pose = Pose()
+                    pose.position.x = float(tvecs[i][0][0])
+                    pose.position.y = float(tvecs[i][0][1])
+                    pose.position.z = float(tvecs[i][0][2])
+
+                    # Convert rotation vector to quaternion
+                    rot_matrix = np.eye(4)
+                    rot_matrix[0:3, 0:3] = cv2.Rodrigues(rvecs[i][0])[0]
+                    quat = tf_transformations.quaternion_from_matrix(rot_matrix)
+
+                    pose.orientation.x = float(quat[0])
+                    pose.orientation.y = float(quat[1])
+                    pose.orientation.z = float(quat[2])
+                    pose.orientation.w = float(quat[3])
+
+                    pose_array.poses.append(pose)
+                    markers.poses.append(pose)
+                    markers.marker_ids.append(int(marker_id[0]))
+                    # self.get_logger().info(
+                    #     f"Detected {len(ids)} markers: {ids.flatten().tolist()}")
+
+                    if self.publish_tf:
+                        self._publish_transform(
+                            pose, marker_id[0],
+                            markers.header.frame_id,
+                            img_msg.header.stamp)
+
+                self.poses_pub.publish(pose_array)
+                self.markers_pub.publish(markers)
 
     def _publish_transform(self, pose, marker_id, frame_id, stamp):
         transform = TransformStamped()
@@ -188,6 +192,42 @@ class ArucoNode(Node):
         transform.transform.rotation.z = pose.orientation.z
         transform.transform.rotation.w = pose.orientation.w
         self.tf_broadcaster.sendTransform(transform)
+    
+    def estimate_pose_ippe(self, corners, marker_size, K, dist):
+        """
+        IPPE-based pose estimation for a single ArUco marker.
+        corners: list of length 1, each is (4,1,2) or (1,4,2)
+        marker_size: length of marker side (meters)
+        K: camera matrix
+        dist: distortion coefficients
+        Returns:
+            rvec, tvec
+        """
+        # Marker coordinate frame: square in Z=0 plane
+        half = marker_size / 2.0
+        obj_points = np.array([
+            [-half,  half, 0.0],  # top-left
+            [ half,  half, 0.0],  # top-right
+            [ half, -half, 0.0],  # bottom-right
+            [-half, -half, 0.0],  # bottom-left
+        ], dtype=np.float32)
+
+        # OpenCV returns corners shape (1,4,2)
+        img_points = corners.reshape(4, 2).astype(np.float32)
+
+        # SolvePnP using the IPPE-specific solver
+        success, rvec, tvec = cv2.solvePnP(
+            obj_points,
+            img_points,
+            K, dist,
+            flags=cv2.SOLVEPNP_IPPE_SQUARE
+        )
+
+        if not success:
+            return None, None
+
+        return rvec, tvec
+
 
 
 def main():

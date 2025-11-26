@@ -6,4 +6,4 @@
     camera_info_topic: /camera/camera/color/camera_info
     camera_frame: camera_color_optical_frame
     publish_tf: true
-    marker_ids: [0, 10]
+    marker_ids: [6, 8]
