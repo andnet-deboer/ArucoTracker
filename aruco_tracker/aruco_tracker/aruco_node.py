@@ -157,7 +157,7 @@ class ArucoNode(Node):
                 pose_array.header.stamp = img_msg.header.stamp
 
                 cv2.aruco.drawDetectedMarkers(cv_image, corners, ids)
-                self.get_logger().info(f'corners ')
+                self.get_logger().info(f'corners are {corners}')
 
                 rvecs, tvecs, _ = cv2.aruco.estimatePoseSingleMarkers(
                     corners, self.marker_size, self.intrinsic_mat, self.distortion)
