@@ -138,44 +138,11 @@ class ArucoNode(Node):
             self.get_logger().error(f"Image conversion error: {e}")
             return
 
-<<<<<<< HEAD
         # Detect markers
         corners, ids, rejected = cv2.aruco.detectMarkers(gray, self.aruco_dict,
                                                          parameters=self.aruco_params)
         if ids is None or len(ids) == 0:
             return
-=======
-        # Detect markers (parameters already tuned in __init__)
-        corners, ids, rejected = cv2.aruco.detectMarkers(
-            gray, self.aruco_dict, parameters=self.aruco_params)
-
-        cv2.aruco.drawDetectedMarkers(cv_image, corners, ids)
-
-        if ids is None or len(ids) == 0:
-            cv2.imshow('camera', cv_image)
-            cv2.waitKey(1)
-            return
-
-        # Check ID list
-        for id in ids:
-            if id not in self.id_list and -1 not in self.id_list:
-                cv2.imshow('camera', cv_image)
-                cv2.waitKey(1)
-                return
-
-        # Estimate poses (corners are already refined by ArUco parameters)
-        rvecs, tvecs, _ = cv2.aruco.estimatePoseSingleMarkers(
-            corners, self.marker_size, self.intrinsic_mat, self.distortion)
-
-        # Publish results
-        markers = ArucoMarkers()
-        pose_array = PoseArray()
-        markers.header.frame_id = self.camera_frame
-        markers.header.stamp = img_msg.header.stamp
-        pose_array.header.frame_id = self.camera_frame
-        pose_array.header.stamp = img_msg.header.stamp
-
->>>>>>> 6bf993211fcb831e80238516ca6e8078a47f0916
         for i, marker_id in enumerate(ids):
             if marker_id in self.id_list:
 
@@ -189,23 +156,12 @@ class ArucoNode(Node):
                 pose_array.header.frame_id = self.camera_frame
                 pose_array.header.stamp = img_msg.header.stamp
 
-<<<<<<< HEAD
                 cv2.aruco.drawDetectedMarkers(cv_image, corners, ids)
                 self.get_logger().info(f'corners ')
-=======
-            pose_array.poses.append(pose)
-            markers.poses.append(pose)
-            markers.marker_ids.append(int(marker_id[0]))
-
-            # Draw axes for this marker
-            cv2.drawFrameAxes(cv_image, self.intrinsic_mat, self.distortion,
-                            rvecs[i][0], tvecs[i][0], self.marker_size * 0.5)
->>>>>>> 6bf993211fcb831e80238516ca6e8078a47f0916
 
                 rvecs, tvecs, _ = cv2.aruco.estimatePoseSingleMarkers(
                     corners, self.marker_size, self.intrinsic_mat, self.distortion)
 
-<<<<<<< HEAD
                 if rvecs is not None:
                     cv2.drawFrameAxes(cv_image,
                                     self.intrinsic_mat,
@@ -251,13 +207,6 @@ class ArucoNode(Node):
 
                 self.poses_pub.publish(pose_array)
                 self.markers_pub.publish(markers)
-=======
-        cv2.imshow('camera', cv_image)
-        cv2.waitKey(1)
-        
-        self.poses_pub.publish(pose_array)
-        self.markers_pub.publish(markers)
->>>>>>> 6bf993211fcb831e80238516ca6e8078a47f0916
 
 
     def _publish_transform(self, pose, marker_id, frame_id, stamp):
@@ -273,7 +222,6 @@ class ArucoNode(Node):
         transform.transform.rotation.z = pose.orientation.z
         transform.transform.rotation.w = pose.orientation.w
         self.tf_broadcaster.sendTransform(transform)
-<<<<<<< HEAD
     
     def estimate_pose_ippe(self, corners, marker_size, K, dist):
         """
@@ -310,9 +258,6 @@ class ArucoNode(Node):
 
         return rvec, tvec
 
-=======
-        self.get_logger().info(f"Sending transform: {transform}")
->>>>>>> 6bf993211fcb831e80238516ca6e8078a47f0916
 
 
 def main():
