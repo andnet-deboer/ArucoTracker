@@ -161,6 +161,10 @@ class ArucoNode(Node):
 
                 rvecs, tvecs, _ = cv2.aruco.estimatePoseSingleMarkers(
                     corners, self.marker_size, self.intrinsic_mat, self.distortion)
+                
+                corners_3d = np.array([[-self.marker_size/2.0, self.marker_size/2.0, 0], [self.marker_size/2.0, self.marker_size/2.0, 0], [self.marker_size/2.0, -self.marker_size/2.0, 0], [-self.marker_size/2.0, -self.marker_size/2.0, 0]])
+
+                success, rvecPNP, tvecPNP = cv2.solvePnP(corners_3d, corners[i], self.intrinsic_mat, self.distortion, flags=0)
 
                 if rvecs is not None:
                     cv2.drawFrameAxes(cv_image,
