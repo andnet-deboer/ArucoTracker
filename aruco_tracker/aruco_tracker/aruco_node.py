@@ -61,8 +61,8 @@ class ArucoNode(Node):
         
         try:
             dictionary_id = cv2.aruco.__getattribute__(dict_name)
-            self.aruco_dict = cv2.aruco.getPredefinedDictionary(dictionary_id)
-            self.aruco_params = cv2.aruco.DetectorParameters()
+            self.aruco_dict = cv2.aruco.Dictionary_get(dictionary_id)
+            self.aruco_params = cv2.aruco.DetectorParameters_create()
             
             # MOVE ALL TUNING HERE - do it once, not every frame
             self.aruco_params.adaptiveThreshWinSizeMin = 3
@@ -110,9 +110,9 @@ class ArucoNode(Node):
         self.distortion = None
         self.bridge = CvBridge()
         try:
-            self.dictionary_id = cv2.aruco.__getattribute__(dict_name)
-            self.aruco_dict = cv2.aruco.getPredefinedDictionary(dictionary_id)
-            self.aruco_params = cv2.aruco.DetectorParameters()
+            dictionary_id = cv2.aruco.__getattribute__(dict_name)
+            self.aruco_dict = cv2.aruco.Dictionary_get(dictionary_id)
+            self.aruco_params = cv2.aruco.DetectorParameters_create()
         except Exception as e:
             self.get_logger().error(
                 f"Failed to load dictionary {dict_name}: {e}")
@@ -139,14 +139,8 @@ class ArucoNode(Node):
             return
 
         # Detect markers
-        # corners, ids, rejected = cv2.aruco.detectMarkers(gray, self.aruco_dict,
-        #                                                  parameters=self.aruco_params)
-        
-        dictionary = cv2.aruco.getPredefinedDictionary(self.dictionary_id)
-        detectorParams = cv2.aruco.DetectorParameters()
-        detector = cv2.aruco.ArucoDetector(dictionary, detectorParams)
-        corners, ids, _ = detector.detectMarkers(gray)
-
+        corners, ids, rejected = cv2.aruco.detectMarkers(gray, self.aruco_dict,
+                                                         parameters=self.aruco_params)
         if ids is None or len(ids) == 0:
             return
         for i, marker_id in enumerate(ids):
@@ -167,20 +161,17 @@ class ArucoNode(Node):
 
                 rvecs, tvecs, _ = cv2.aruco.estimatePoseSingleMarkers(
                     corners, self.marker_size, self.intrinsic_mat, self.distortion)
-                self.get_logger().info(f'rvev is {rvecs}')
-                self.get_logger().info(f'tvev is {tvecs}')
                 
                 corners_3d = np.array([[-self.marker_size/2.0, self.marker_size/2.0, 0], [self.marker_size/2.0, self.marker_size/2.0, 0], [self.marker_size/2.0, -self.marker_size/2.0, 0], [-self.marker_size/2.0, -self.marker_size/2.0, 0]])
 
                 success, rvecPNP, tvecPNP = cv2.solvePnP(corners_3d, corners[i], self.intrinsic_mat, self.distortion, flags=0)
-                self.get_logger().info(f'rvevPNP is {rvecPNP}')
-                self.get_logger().info(f'tvevPNP is {tvecPNP}')
+
                 if rvecs is not None:
                     cv2.drawFrameAxes(cv_image,
                                     self.intrinsic_mat,
                                     self.distortion,
-                                    rvecPNP,
-                                    tvecPNP,
+                                    rvecs[0],
+                                    tvecs[0],
                                     self.marker_size * 0.5)
         
         # # self.get_logger().info(f"Ids are: \n{ids}")
