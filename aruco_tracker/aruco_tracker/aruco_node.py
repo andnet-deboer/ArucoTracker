@@ -61,8 +61,8 @@ class ArucoNode(Node):
         
         try:
             dictionary_id = cv2.aruco.__getattribute__(dict_name)
-            self.aruco_dict = cv2.aruco.Dictionary_get(dictionary_id)
-            self.aruco_params = cv2.aruco.DetectorParameters_create()
+            self.aruco_dict = cv2.aruco.getPredefinedDictionary(dictionary_id)
+            self.aruco_params = cv2.aruco.DetectorParameters()
             
             # MOVE ALL TUNING HERE - do it once, not every frame
             self.aruco_params.adaptiveThreshWinSizeMin = 3
@@ -111,8 +111,8 @@ class ArucoNode(Node):
         self.bridge = CvBridge()
         try:
             dictionary_id = cv2.aruco.__getattribute__(dict_name)
-            self.aruco_dict = cv2.aruco.Dictionary_get(dictionary_id)
-            self.aruco_params = cv2.aruco.DetectorParameters_create()
+            self.aruco_dict = cv2.aruco.getPredefinedDictionary(dictionary_id)
+            self.aruco_params = cv2.aruco.DetectorParameters()
         except Exception as e:
             self.get_logger().error(
                 f"Failed to load dictionary {dict_name}: {e}")
@@ -161,17 +161,20 @@ class ArucoNode(Node):
 
                 rvecs, tvecs, _ = cv2.aruco.estimatePoseSingleMarkers(
                     corners, self.marker_size, self.intrinsic_mat, self.distortion)
+                self.get_logger().info(f'rvev is {rvecs}')
+                self.get_logger().info(f'tvev is {tvecs}')
                 
                 corners_3d = np.array([[-self.marker_size/2.0, self.marker_size/2.0, 0], [self.marker_size/2.0, self.marker_size/2.0, 0], [self.marker_size/2.0, -self.marker_size/2.0, 0], [-self.marker_size/2.0, -self.marker_size/2.0, 0]])
 
                 success, rvecPNP, tvecPNP = cv2.solvePnP(corners_3d, corners[i], self.intrinsic_mat, self.distortion, flags=0)
-
+                self.get_logger().info(f'rvevPNP is {rvecPNP}')
+                self.get_logger().info(f'tvevPNP is {tvecPNP}')
                 if rvecs is not None:
                     cv2.drawFrameAxes(cv_image,
                                     self.intrinsic_mat,
                                     self.distortion,
-                                    rvecs[0],
-                                    tvecs[0],
+                                    rvecPNP,
+                                    tvecPNP,
                                     self.marker_size * 0.5)
         
         # # self.get_logger().info(f"Ids are: \n{ids}")
