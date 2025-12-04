@@ -110,7 +110,7 @@ class ArucoNode(Node):
         self.distortion = None
         self.bridge = CvBridge()
         try:
-            dictionary_id = cv2.aruco.__getattribute__(dict_name)
+            self.dictionary_id = cv2.aruco.__getattribute__(dict_name)
             self.aruco_dict = cv2.aruco.getPredefinedDictionary(dictionary_id)
             self.aruco_params = cv2.aruco.DetectorParameters()
         except Exception as e:
@@ -139,8 +139,14 @@ class ArucoNode(Node):
             return
 
         # Detect markers
-        corners, ids, rejected = cv2.aruco.detectMarkers(gray, self.aruco_dict,
-                                                         parameters=self.aruco_params)
+        # corners, ids, rejected = cv2.aruco.detectMarkers(gray, self.aruco_dict,
+        #                                                  parameters=self.aruco_params)
+        
+        dictionary = cv2.aruco.getPredefinedDictionary(self.dictionary_id)
+        detectorParams = cv2.aruco.DetectorParameters()
+        detector = cv2.aruco.ArucoDetector(dictionary, detectorParams)
+        corners, ids, _ = detector.detectMarkers(gray)
+
         if ids is None or len(ids) == 0:
             return
         for i, marker_id in enumerate(ids):
