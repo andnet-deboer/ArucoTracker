@@ -1,0 +1,8 @@
+aruco_node_cpp:
+  ros__parameters:
+    marker_size: 0.03
+    target_ids: [202]
+    filter_min_cutoff: 1.0
+    filter_beta: 0.05
+    show_gui: true
+    camera_frame: head_camera_infra1_optical_frame

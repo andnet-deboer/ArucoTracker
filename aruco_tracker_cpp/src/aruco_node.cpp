@@ -189,6 +189,11 @@ private:
             }
         }
 
+                // DEBUG - print ALL detected IDs before whitelist filtering
+        for (int id : ids) {
+            RCLCPP_INFO(this->get_logger(), "Detected marker ID: %d", id);
+        }
+
         if (!pose_array.poses.empty()) pose_pub_->publish(pose_array);
 
         if (show_gui_) {
