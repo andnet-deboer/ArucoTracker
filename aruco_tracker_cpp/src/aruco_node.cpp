@@ -2,17 +2,18 @@
 #include <sensor_msgs/msg/image.hpp>
 #include <sensor_msgs/msg/camera_info.hpp>
 #include <geometry_msgs/msg/pose_array.hpp>
-#include <geometry_msgs/msg/pose_stamped.hpp>
 #include <tf2_ros/transform_broadcaster.h>
 #include <tf2/LinearMath/Quaternion.h>
 #include <tf2/LinearMath/Matrix3x3.h>
 #include <opencv2/opencv.hpp>
 #include <opencv2/aruco.hpp>
-#include "aruco_tracker_msgs/msg/aruco_markers.hpp"
+#include <map>
+#include <vector>
+#include <algorithm>
 
 using std::placeholders::_1;
 
-// EURO FILTER
+// --- 1 EURO FILTER CLASS ---
 class OneEuroFilter {
 public:
     OneEuroFilter(double min_cutoff = 1.0, double beta = 0.0) 
@@ -25,24 +26,14 @@ public:
             dx_prev_ = 0.0;
             return value;
         }
-
-        // Calculate derivative
         double dx = (value - x_prev_) / dt;
         double dx_hat = exponentialSmoothing(dx, dx_prev_, alpha(d_cutoff_, dt));
-
-        // Calculate dynamic cutoff frequency
-        // If moving fast (high dx), cutoff increases (less smoothing, less lag)
-        // If still (low dx), cutoff decreases (more smoothing, less jitter)
         double cutoff = min_cutoff_ + beta_ * std::abs(dx_hat);
-        
-        // Filter the main value
         double x_hat = exponentialSmoothing(value, x_prev_, alpha(cutoff, dt));
-
         x_prev_ = x_hat;
         dx_prev_ = dx_hat;
         return x_hat;
     }
-
     void reset() { initialized_ = false; }
 
 private:
@@ -50,48 +41,49 @@ private:
         double tau = 1.0 / (2.0 * M_PI * cutoff);
         return 1.0 / (1.0 + tau / dt);
     }
-
     double exponentialSmoothing(double current, double prev, double alpha) {
         return alpha * current + (1.0 - alpha) * prev;
     }
-
-    double min_cutoff_, beta_, d_cutoff_;
-    double x_prev_, dx_prev_;
+    double min_cutoff_, beta_, d_cutoff_, x_prev_, dx_prev_;
     bool initialized_;
 };
-// -----------------------------------------------------
+
+// --- FILTER BANK (One per Marker ID) ---
+struct MarkerFilter {
+    OneEuroFilter x, y, z, qx, qy, qz, qw;
+    MarkerFilter(double mc, double b) : x(mc,b), y(mc,b), z(mc,b), qx(mc,b), qy(mc,b), qz(mc,b), qw(mc,b) {}
+};
 
 class ArucoNodeCpp : public rclcpp::Node {
 public:
     ArucoNodeCpp() : Node("aruco_node_cpp") {
-        // Parameters
+        // 1. Declare Parameters
         this->declare_parameter("marker_size", 0.05);
+        this->declare_parameter("target_ids", std::vector<long int>{135}); 
+        this->declare_parameter("filter_min_cutoff", 1.0);
+        this->declare_parameter("filter_beta", 0.05);
+        this->declare_parameter("show_gui", true);
         this->declare_parameter("camera_frame", "head_camera_infra1_optical_frame");
-        // Tuning for 1 Euro Filter
-        this->declare_parameter("filter_min_cutoff", 1.0); // Hz. Lower = smoother when still.
-        this->declare_parameter("filter_beta", 0.05);      // Higher = faster response when moving.
 
+        // 2. Fetch Parameters
         marker_size_ = this->get_parameter("marker_size").as_double();
+        target_ids_ = this->get_parameter("target_ids").as_integer_array();
+        min_c_ = this->get_parameter("filter_min_cutoff").as_double();
+        beta_ = this->get_parameter("filter_beta").as_double();
+        show_gui_ = this->get_parameter("show_gui").as_bool();
         camera_frame_ = this->get_parameter("camera_frame").as_string();
-        
-        double min_c = this->get_parameter("filter_min_cutoff").as_double();
-        double beta = this->get_parameter("filter_beta").as_double();
 
-        // Initialize 7 Filters (X, Y, Z, Qx, Qy, Qz, Qw)
-        f_x = OneEuroFilter(min_c, beta);
-        f_y = OneEuroFilter(min_c, beta);
-        f_z = OneEuroFilter(min_c, beta);
-        f_qx = OneEuroFilter(min_c, beta);
-        f_qy = OneEuroFilter(min_c, beta);
-        f_qz = OneEuroFilter(min_c, beta);
-        f_qw = OneEuroFilter(min_c, beta);
-
-        // ArUco Setup
+        // 3. ArUco/OpenCV Setup
         dictionary_ = cv::aruco::getPredefinedDictionary(cv::aruco::DICT_6X6_250);
         parameters_ = cv::aruco::DetectorParameters::create();
         parameters_->cornerRefinementMethod = cv::aruco::CORNER_REFINE_SUBPIX;
 
-        // ROS Communication
+        if (show_gui_) {
+            cv::namedWindow("Filtered Tracker", cv::WINDOW_NORMAL);
+            cv::startWindowThread();
+        }
+
+        // 4. ROS Communication
         auto qos = rclcpp::SensorDataQoS();
         info_sub_ = this->create_subscription<sensor_msgs::msg::CameraInfo>(
             "camera_info", qos, std::bind(&ArucoNodeCpp::info_callback, this, _1));
@@ -101,7 +93,11 @@ public:
         pose_pub_ = this->create_publisher<geometry_msgs::msg::PoseArray>("aruco_poses", 10);
         tf_broadcaster_ = std::make_unique<tf2_ros::TransformBroadcaster>(*this);
 
-        RCLCPP_INFO(this->get_logger(), "C++ Tracker + 1Euro Filter Ready.");
+        RCLCPP_INFO(this->get_logger(), "Aruco Multi-Tracker Ready. GUI: %s", show_gui_ ? "ON" : "OFF");
+    }
+
+    ~ArucoNodeCpp() {
+        if (show_gui_) cv::destroyAllWindows();
     }
 
 private:
@@ -117,15 +113,11 @@ private:
     void image_callback(const sensor_msgs::msg::Image::SharedPtr msg) {
         if (!has_calibration_) return;
 
-        // Calculate Delta Time (dt) for Filter
         rclcpp::Time current_time = msg->header.stamp;
-        if (last_time_.nanoseconds() == 0) {
-            last_time_ = current_time;
-            return; // Skip first frame to avoid huge dt
-        }
+        if (last_time_.nanoseconds() == 0) { last_time_ = current_time; return; }
         double dt = (current_time - last_time_).seconds();
         last_time_ = current_time;
-        if (dt <= 0) dt = 1.0/90.0; // Safety fallback
+        if (dt <= 0) dt = 1.0/90.0;
 
         // Decode Image
         cv::Mat frame;
@@ -142,108 +134,87 @@ private:
         std::vector<std::vector<cv::Point2f>> corners;
         cv::aruco::detectMarkers(frame, dictionary_, corners, ids, parameters_);
 
-        if (ids.size() > 0) {
-            std::vector<cv::Vec3d> rvecs, tvecs;
-            cv::aruco::estimatePoseSingleMarkers(corners, marker_size_, camera_matrix_, dist_coeffs_, rvecs, tvecs);
+        auto pose_array = geometry_msgs::msg::PoseArray();
+        pose_array.header = msg->header;
 
-            auto pose_array = geometry_msgs::msg::PoseArray();
-            pose_array.header = msg->header;
+        for (size_t k = 0; k < ids.size(); ++k) {
+            int id = ids[k];
+            // Whitelist Check
+            if (std::find(target_ids_.begin(), target_ids_.end(), id) != target_ids_.end()) {
+                
+                if (filter_bank_.find(id) == filter_bank_.end()) {
+                    filter_bank_.emplace(id, std::make_unique<MarkerFilter>(min_c_, beta_));
+                }
+                auto& f = filter_bank_.at(id);
 
-            // We only filter the FIRST marker found (Single Marker Logic)
-            // If you track multiple, you'd need a filter bank per ID.
-            size_t i = 0; 
-            
-            // --- RAW DATA ---
-            double raw_x = tvecs[i][0];
-            double raw_y = tvecs[i][1];
-            double raw_z = tvecs[i][2];
+                std::vector<cv::Vec3d> rvecs, tvecs;
+                std::vector<std::vector<cv::Point2f>> single_set = {corners[k]};
+                cv::aruco::estimatePoseSingleMarkers(single_set, marker_size_, camera_matrix_, dist_coeffs_, rvecs, tvecs);
 
-            cv::Mat rot_matrix;
-            cv::Rodrigues(rvecs[i], rot_matrix);
-            tf2::Matrix3x3 tf2_rot(
-                rot_matrix.at<double>(0,0), rot_matrix.at<double>(0,1), rot_matrix.at<double>(0,2),
-                rot_matrix.at<double>(1,0), rot_matrix.at<double>(1,1), rot_matrix.at<double>(1,2),
-                rot_matrix.at<double>(2,0), rot_matrix.at<double>(2,1), rot_matrix.at<double>(2,2)
-            );
-            tf2::Quaternion q; 
-            tf2_rot.getRotation(q);
+                cv::Mat rot_matrix;
+                cv::Rodrigues(rvecs[0], rot_matrix);
+                tf2::Matrix3x3 tf2_rot(
+                    rot_matrix.at<double>(0,0), rot_matrix.at<double>(0,1), rot_matrix.at<double>(0,2),
+                    rot_matrix.at<double>(1,0), rot_matrix.at<double>(1,1), rot_matrix.at<double>(1,2),
+                    rot_matrix.at<double>(2,0), rot_matrix.at<double>(2,1), rot_matrix.at<double>(2,2)
+                );
+                tf2::Quaternion q; tf2_rot.getRotation(q);
 
-            // --- FILTERING ---
-            double smooth_x = f_x.filter(raw_x, dt);
-            double smooth_y = f_y.filter(raw_y, dt);
-            double smooth_z = f_z.filter(raw_z, dt);
-            
-            double smooth_qx = f_qx.filter(q.x(), dt);
-            double smooth_qy = f_qy.filter(q.y(), dt);
-            double smooth_qz = f_qz.filter(q.z(), dt);
-            double smooth_qw = f_qw.filter(q.w(), dt);
+                // Filter Pos and Ori
+                double sx = f->x.filter(tvecs[0][0], dt);
+                double sy = f->y.filter(tvecs[0][1], dt);
+                double sz = f->z.filter(tvecs[0][2], dt);
+                double sqx = f->qx.filter(q.x(), dt);
+                double sqy = f->qy.filter(q.y(), dt);
+                double sqz = f->qz.filter(q.z(), dt);
+                double sqw = f->qw.filter(q.w(), dt);
+                tf2::Quaternion sq(sqx, sqy, sqz, sqw); sq.normalize();
 
-            // Normalize quaternion after filtering (Vital!)
-            tf2::Quaternion smooth_q(smooth_qx, smooth_qy, smooth_qz, smooth_qw);
-            smooth_q.normalize();
+                geometry_msgs::msg::Pose p;
+                p.position.x = sx; p.position.y = sy; p.position.z = sz;
+                p.orientation.x = sq.x(); p.orientation.y = sq.y(); p.orientation.z = sq.z(); p.orientation.w = sq.w();
+                pose_array.poses.push_back(p);
 
-            // --- PUBLISH ---
-            geometry_msgs::msg::Pose pose;
-            pose.position.x = smooth_x;
-            pose.position.y = smooth_y;
-            pose.position.z = smooth_z;
-            pose.orientation.x = smooth_q.x();
-            pose.orientation.y = smooth_q.y();
-            pose.orientation.z = smooth_q.z();
-            pose.orientation.w = smooth_q.w();
+                geometry_msgs::msg::TransformStamped t;
+                t.header = msg->header;
+                t.child_frame_id = "aruco_" + std::to_string(id);
+                t.transform.translation.x = sx; t.transform.translation.y = sy; t.transform.translation.z = sz;
+                t.transform.rotation = p.orientation;
+                tf_broadcaster_->sendTransform(t);
 
-            pose_array.poses.push_back(pose);
-            
-            // Publish TF
-            geometry_msgs::msg::TransformStamped t;
-            t.header = msg->header;
-            t.child_frame_id = "aruco_" + std::to_string(ids[i]);
-            t.transform.translation.x = pose.position.x;
-            t.transform.translation.y = pose.position.y;
-            t.transform.translation.z = pose.position.z;
-            t.transform.rotation = pose.orientation;
-            tf_broadcaster_->sendTransform(t);
-
-            // Visualization (Green Axis = Filtered)
-            if (frame.channels() == 1) cv::cvtColor(frame, frame, cv::COLOR_GRAY2BGR);
-            
-            // Draw Raw Axis (Red/Blue/Green standard)
-            cv::drawFrameAxes(frame, camera_matrix_, dist_coeffs_, rvecs[i], tvecs[i], marker_size_);
-            
-            // Draw Filtered Center (Yellow Dot)
-            // (Project 3D point back to 2D to verify alignment)
-            std::vector<cv::Point3f> pt3d = {{ (float)smooth_x, (float)smooth_y, (float)smooth_z }};
-            std::vector<cv::Point2f> pt2d;
-            // Note: simple projection check isn't trivial without rvec/tvec conversion back
-            // so we trust the TF broadcast for verification
-            
-            pose_pub_->publish(pose_array);
-        } else {
-            // Reset filters if tracking is lost, so it doesn't "teleport" next time
-            f_x.reset(); f_y.reset(); f_z.reset();
-            f_qx.reset(); f_qy.reset(); f_qz.reset(); f_qw.reset();
+                if (show_gui_) {
+                    if (frame.channels() == 1) cv::cvtColor(frame, frame, cv::COLOR_GRAY2BGR);
+                    cv::drawFrameAxes(frame, camera_matrix_, dist_coeffs_, rvecs[0], tvecs[0], marker_size_);
+                }
+            }
         }
-        cv::Mat dst_image;
-        cv::rotate(frame, dst_image, cv::ROTATE_90_CLOCKWISE);
-        cv::imshow("Filtered Tracker", dst_imag)e;
-        cv::waitKey(1);
+
+        if (!pose_array.poses.empty()) pose_pub_->publish(pose_array);
+
+        if (show_gui_) {
+            cv::Mat dst_image;
+            cv::rotate(frame, dst_image, cv::ROTATE_90_CLOCKWISE);
+            cv::imshow("Filtered Tracker", dst_image);
+            cv::waitKey(1);
+        }
     }
 
-    // Filters
-    OneEuroFilter f_x, f_y, f_z, f_qx, f_qy, f_qz, f_qw;
+    // Members
+    std::vector<long int> target_ids_;
+    double marker_size_, min_c_, beta_;
+    bool show_gui_;
+    std::string camera_frame_;
+    std::map<int, std::unique_ptr<MarkerFilter>> filter_bank_;
     rclcpp::Time last_time_;
+    bool has_calibration_ = false;
+    cv::Mat camera_matrix_, dist_coeffs_;
+    cv::Ptr<cv::aruco::Dictionary> dictionary_;
+    cv::Ptr<cv::aruco::DetectorParameters> parameters_;
 
     rclcpp::Subscription<sensor_msgs::msg::CameraInfo>::SharedPtr info_sub_;
     rclcpp::Subscription<sensor_msgs::msg::Image>::SharedPtr image_sub_;
     rclcpp::Publisher<geometry_msgs::msg::PoseArray>::SharedPtr pose_pub_;
     std::unique_ptr<tf2_ros::TransformBroadcaster> tf_broadcaster_;
-
-    cv::Ptr<cv::aruco::Dictionary> dictionary_;
-    cv::Ptr<cv::aruco::DetectorParameters> parameters_;
-    cv::Mat camera_matrix_, dist_coeffs_;
-    bool has_calibration_ = false;
-    double marker_size_;
-    std::string camera_frame_;
 };
 
 int main(int argc, char** argv) {

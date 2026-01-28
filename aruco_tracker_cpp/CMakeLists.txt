@@ -44,6 +44,10 @@ install(TARGETS aruco_node_cpp
   DESTINATION lib/${PROJECT_NAME}
 )
 
+install(DIRECTORY config
+  DESTINATION share/${PROJECT_NAME}
+)
+
 install(DIRECTORY launch config
   DESTINATION share/${PROJECT_NAME}
 )
