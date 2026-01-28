@@ -1,9 +1,9 @@
 /aruco_node:
   ros__parameters:
-    marker_size: 0.1
-    aruco_dictionary_id: DICT_4X4_1000
-    image_topic: /camera/camera/color/image_raw
-    camera_info_topic: /camera/camera/color/camera_info
-    camera_frame: camera_color_optical_frame
+    marker_size: 0.05  # 50mm
+    aruco_dictionary_id: "DICT_6X6_250"  # Switched to 250 (Standard) - Change to 1000 ONLY if you are sure
+    image_topic: "/camera/head_camera/color/image_raw"  # FIXED: Matches your real topic
+    camera_info_topic: "/camera/head_camera/color/camera_info" # FIXED: Matches your real topic
+    camera_frame: "camera_color_optical_frame"
     publish_tf: true
-    marker_ids: [6, 8]
+    marker_ids: [135] # The ID you are holding
