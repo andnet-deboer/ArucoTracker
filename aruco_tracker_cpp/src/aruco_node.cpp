@@ -223,8 +223,9 @@ private:
             f_x.reset(); f_y.reset(); f_z.reset();
             f_qx.reset(); f_qy.reset(); f_qz.reset(); f_qw.reset();
         }
-
-        cv::imshow("Filtered Tracker", frame);
+        cv::Mat dst_image;
+        cv::rotate(frame, dst_image, cv::ROTATE_90_CLOCKWISE);
+        cv::imshow("Filtered Tracker", dst_imag)e;
         cv::waitKey(1);
     }
 

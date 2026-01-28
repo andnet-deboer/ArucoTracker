@@ -19,7 +19,6 @@ def generate_launch_description():
             'enable_infra1': 'true',
             'enable_depth': 'false',
             
-            # --- THE 90FPS FIX ---
             # 'depth_module.profile' is for depth, but 'infra_profile' 
             # specifically controls the OV9282 Global Shutter sensor.
             'depth_module.infra_profile': '848x480x90',
