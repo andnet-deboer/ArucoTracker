@@ -77,6 +77,15 @@ public:
         dictionary_ = cv::aruco::getPredefinedDictionary(cv::aruco::DICT_6X6_250);
         parameters_ = cv::aruco::DetectorParameters::create();
         parameters_->cornerRefinementMethod = cv::aruco::CORNER_REFINE_SUBPIX;
+        // Speed optimizations
+        parameters_->cornerRefinementMethod = cv::aruco::CORNER_REFINE_NONE;  // Faster than SUBPIX
+        // parameters_->adaptiveThreshWinSizeMin = 5;
+        // parameters_->adaptiveThreshWinSizeMax = 21;
+        // parameters_->adaptiveThreshWinSizeStep = 4;
+        // parameters_->minMarkerPerimeterRate = 0.05;
+        // parameters_->maxMarkerPerimeterRate = 4.0;
+        // parameters_->polygonalApproxAccuracyRate = 0.05;
+        // parameters_->minCornerDistanceRate = 0.05;
 
         if (show_gui_) {
             cv::namedWindow("Filtered Tracker", cv::WINDOW_NORMAL);

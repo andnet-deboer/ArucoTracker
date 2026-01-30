@@ -22,7 +22,7 @@ def generate_launch_description():
             'enable_color': 'false',
             'enable_infra1': 'true',
             'enable_depth': 'false',
-            'depth_module.infra_profile': '848x480x30',
+            'depth_module.infra_profile': '424x240x60',
         }.items()
     )
     
@@ -43,7 +43,8 @@ def generate_launch_description():
         period=5.0,
         actions=[
             ExecuteProcess(cmd=['ros2', 'param', 'set', '/camera/head_camera', 'depth_module.emitter_enabled', '0']),
-            ExecuteProcess(cmd=['ros2', 'param', 'set', '/camera/head_camera', 'depth_module.exposure', '30000']),
+            ExecuteProcess(cmd=['ros2', 'param', 'set', '/camera/head_camera', 'depth_module.exposure', '15000']),
+            ExecuteProcess(cmd=['ros2', 'param', 'set', '/camera/head_camera', 'depth_module.enable_auto_exposure', 'false']),
             ExecuteProcess(cmd=['ros2', 'param', 'set', '/camera/head_camera', 'depth_module.gain', '90']),
         ]
     )

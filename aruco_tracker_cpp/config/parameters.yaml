@@ -1,7 +1,7 @@
 aruco_node_cpp:
   ros__parameters:
     marker_size: 0.03
-    target_ids: [202]
+    target_ids: [240,242,243,244,241,200,201,202,203,204]
     filter_min_cutoff: 1.0
     filter_beta: 0.05
     show_gui: true
