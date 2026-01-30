@@ -10,6 +10,7 @@
 #include <map>
 #include <vector>
 #include <algorithm>
+#include <string>
 
 using std::placeholders::_1;
 
@@ -48,7 +49,6 @@ private:
     bool initialized_;
 };
 
-// --- FILTER BANK (One per Marker ID) ---
 struct MarkerFilter {
     OneEuroFilter x, y, z, qx, qy, qz, qw;
     MarkerFilter(double mc, double b) : x(mc,b), y(mc,b), z(mc,b), qx(mc,b), qy(mc,b), qz(mc,b), qw(mc,b) {}
@@ -59,7 +59,8 @@ public:
     ArucoNodeCpp() : Node("aruco_node_cpp") {
         // 1. Declare Parameters
         this->declare_parameter("marker_size", 0.05);
-        this->declare_parameter("target_ids", std::vector<long int>{135}); 
+        this->declare_parameter("target_ids", std::vector<long int>{0, 1, 2, 3, 4}); 
+        this->declare_parameter("aruco_dictionary_id", "DICT_APRILTAG_36h11");
         this->declare_parameter("filter_min_cutoff", 1.0);
         this->declare_parameter("filter_beta", 0.05);
         this->declare_parameter("show_gui", true);
@@ -72,20 +73,29 @@ public:
         beta_ = this->get_parameter("filter_beta").as_double();
         show_gui_ = this->get_parameter("show_gui").as_bool();
         camera_frame_ = this->get_parameter("camera_frame").as_string();
+        std::string dict_name = this->get_parameter("aruco_dictionary_id").as_string();
 
-        // 3. ArUco/OpenCV Setup
-        dictionary_ = cv::aruco::getPredefinedDictionary(cv::aruco::DICT_6X6_250);
+        // 3. Dictionary Selection Logic
+        std::map<std::string, cv::aruco::PREDEFINED_DICTIONARY_NAME> dict_map = {
+            {"DICT_4X4_50", cv::aruco::DICT_4X4_50},
+            {"DICT_6X6_250", cv::aruco::DICT_6X6_250},
+            {"DICT_APRILTAG_16h5", cv::aruco::DICT_APRILTAG_16h5},
+            {"DICT_APRILTAG_25h9", cv::aruco::DICT_APRILTAG_25h9},
+            {"DICT_APRILTAG_36h10", cv::aruco::DICT_APRILTAG_36h10},
+            {"DICT_APRILTAG_36h11", cv::aruco::DICT_APRILTAG_36h11}
+        };
+
+        if (dict_map.count(dict_name)) {
+            dictionary_ = cv::aruco::getPredefinedDictionary(dict_map[dict_name]);
+            RCLCPP_INFO(this->get_logger(), "Initialized with Dictionary: %s", dict_name.c_str());
+        } else {
+            RCLCPP_ERROR(this->get_logger(), "Invalid Dictionary: %s. Defaulting to 6X6_250", dict_name.c_str());
+            dictionary_ = cv::aruco::getPredefinedDictionary(cv::aruco::DICT_6X6_250);
+        }
+
         parameters_ = cv::aruco::DetectorParameters::create();
+        // SUBPIX is highly recommended for AprilTags to get accurate pose
         parameters_->cornerRefinementMethod = cv::aruco::CORNER_REFINE_SUBPIX;
-        // Speed optimizations
-        parameters_->cornerRefinementMethod = cv::aruco::CORNER_REFINE_NONE;  // Faster than SUBPIX
-        // parameters_->adaptiveThreshWinSizeMin = 5;
-        // parameters_->adaptiveThreshWinSizeMax = 21;
-        // parameters_->adaptiveThreshWinSizeStep = 4;
-        // parameters_->minMarkerPerimeterRate = 0.05;
-        // parameters_->maxMarkerPerimeterRate = 4.0;
-        // parameters_->polygonalApproxAccuracyRate = 0.05;
-        // parameters_->minCornerDistanceRate = 0.05;
 
         if (show_gui_) {
             cv::namedWindow("Filtered Tracker", cv::WINDOW_NORMAL);
@@ -101,8 +111,6 @@ public:
 
         pose_pub_ = this->create_publisher<geometry_msgs::msg::PoseArray>("aruco_poses", 10);
         tf_broadcaster_ = std::make_unique<tf2_ros::TransformBroadcaster>(*this);
-
-        RCLCPP_INFO(this->get_logger(), "Aruco Multi-Tracker Ready. GUI: %s", show_gui_ ? "ON" : "OFF");
     }
 
     ~ArucoNodeCpp() {
@@ -128,7 +136,6 @@ private:
         last_time_ = current_time;
         if (dt <= 0) dt = 1.0/90.0;
 
-        // Decode Image
         cv::Mat frame;
         if (msg->encoding == "mono8") {
             frame = cv::Mat(msg->height, msg->width, CV_8UC1, const_cast<unsigned char*>(msg->data.data()), msg->step);
@@ -138,7 +145,6 @@ private:
             else frame = raw;
         }
 
-        // Detect
         std::vector<int> ids;
         std::vector<std::vector<cv::Point2f>> corners;
         cv::aruco::detectMarkers(frame, dictionary_, corners, ids, parameters_);
@@ -148,7 +154,6 @@ private:
 
         for (size_t k = 0; k < ids.size(); ++k) {
             int id = ids[k];
-            // Whitelist Check
             if (std::find(target_ids_.begin(), target_ids_.end(), id) != target_ids_.end()) {
                 
                 if (filter_bank_.find(id) == filter_bank_.end()) {
@@ -169,7 +174,6 @@ private:
                 );
                 tf2::Quaternion q; tf2_rot.getRotation(q);
 
-                // Filter Pos and Ori
                 double sx = f->x.filter(tvecs[0][0], dt);
                 double sy = f->y.filter(tvecs[0][1], dt);
                 double sz = f->z.filter(tvecs[0][2], dt);
@@ -186,7 +190,7 @@ private:
 
                 geometry_msgs::msg::TransformStamped t;
                 t.header = msg->header;
-                t.child_frame_id = "aruco_" + std::to_string(id);
+                t.child_frame_id = "marker_" + std::to_string(id);
                 t.transform.translation.x = sx; t.transform.translation.y = sy; t.transform.translation.z = sz;
                 t.transform.rotation = p.orientation;
                 tf_broadcaster_->sendTransform(t);
@@ -196,11 +200,6 @@ private:
                     cv::drawFrameAxes(frame, camera_matrix_, dist_coeffs_, rvecs[0], tvecs[0], marker_size_);
                 }
             }
-        }
-
-                // DEBUG - print ALL detected IDs before whitelist filtering
-        for (int id : ids) {
-            RCLCPP_INFO(this->get_logger(), "Detected marker ID: %d", id);
         }
 
         if (!pose_array.poses.empty()) pose_pub_->publish(pose_array);
@@ -213,7 +212,6 @@ private:
         }
     }
 
-    // Members
     std::vector<long int> target_ids_;
     double marker_size_, min_c_, beta_;
     bool show_gui_;
