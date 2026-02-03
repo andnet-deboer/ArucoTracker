@@ -53,11 +53,11 @@ def generate_launch_description():
                     output='screen'
                 ),
                 ExecuteProcess(
-                    cmd=['ros2', 'param', 'set', '/camera/head_camera', 'depth_module.exposure', '80000'],
+                    cmd=['ros2', 'param', 'set', '/camera/head_camera', 'depth_module.exposure', '2000'],
                     output='screen'
                 ),
                 ExecuteProcess(
-                    cmd=['ros2', 'param', 'set', '/camera/head_camera', 'depth_module.gain', '90'],
+                    cmd=['ros2', 'param', 'set', '/camera/head_camera', 'depth_module.gain', '70'],
                     output='screen'
                 ),
             ]

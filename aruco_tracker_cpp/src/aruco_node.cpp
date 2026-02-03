@@ -59,10 +59,12 @@ public:
         this->declare_parameter("aruco_dictionary_id", "DICT_APRILTAG_36h11");
         this->declare_parameter("filter_min_cutoff", 1.0);
         this->declare_parameter("filter_beta", 0.05);
+        this->declare_parameter("publish_debug_image", true);  // NEW
 
         marker_size_ = this->get_parameter("marker_size").as_double();
         camera_frame_ = this->get_parameter("camera_frame").as_string();
         std::string dict_name = this->get_parameter("aruco_dictionary_id").as_string();
+        publish_debug_ = this->get_parameter("publish_debug_image").as_bool();
         
         double min_c = this->get_parameter("filter_min_cutoff").as_double();
         double beta = this->get_parameter("filter_beta").as_double();
@@ -100,7 +102,6 @@ public:
         }
 
         parameters_ = cv::aruco::DetectorParameters::create();
-        // Use CONTOUR instead of SUBPIX for speed (still accurate for AprilTags)
         parameters_->cornerRefinementMethod = cv::aruco::CORNER_REFINE_CONTOUR;
 
         // ROS Communication
@@ -112,6 +113,12 @@ public:
 
         pose_pub_ = this->create_publisher<geometry_msgs::msg::PoseArray>("aruco_poses", 10);
         tf_broadcaster_ = std::make_unique<tf2_ros::TransformBroadcaster>(*this);
+        
+        // Debug image publisher
+        if (publish_debug_) {
+            debug_image_pub_ = this->create_publisher<sensor_msgs::msg::Image>("aruco_debug_image", 10);
+            RCLCPP_INFO(this->get_logger(), "Debug image publishing ENABLED on 'aruco_debug_image'");
+        }
 
         RCLCPP_INFO(this->get_logger(), "C++ Tracker + 1Euro Filter Ready.");
     }
@@ -139,9 +146,11 @@ private:
         last_time_ = current_time;
         if (dt <= 0) dt = 1.0/90.0;
 
-        // Decode Image (zero-copy for mono8)
+        // Decode Image
         cv::Mat frame;
-        if (msg->encoding == "mono8") {
+        bool is_mono = (msg->encoding == "mono8");
+        
+        if (is_mono) {
             frame = cv::Mat(msg->height, msg->width, CV_8UC1, 
                 const_cast<unsigned char*>(msg->data.data()), msg->step);
         } else {
@@ -155,6 +164,20 @@ private:
         std::vector<int> ids;
         std::vector<std::vector<cv::Point2f>> corners;
         cv::aruco::detectMarkers(frame, dictionary_, corners, ids, parameters_);
+
+        // Prepare debug image only if needed and has subscribers
+        cv::Mat debug_frame;
+        bool should_publish_debug = publish_debug_ && 
+            (debug_image_pub_->get_subscription_count() > 0);
+        
+        if (should_publish_debug) {
+            // Convert mono to BGR for colored overlay
+            if (is_mono) {
+                cv::cvtColor(frame, debug_frame, cv::COLOR_GRAY2BGR);
+            } else {
+                debug_frame = frame.clone();
+            }
+        }
 
         if (ids.size() > 0) {
             std::vector<cv::Vec3d> rvecs, tvecs;
@@ -214,10 +237,49 @@ private:
             t.transform.rotation = pose.orientation;
             tf_broadcaster_->sendTransform(t);
 
+            // Draw debug overlay
+            if (should_publish_debug) {
+                // Draw detected markers (green corners + ID)
+                cv::aruco::drawDetectedMarkers(debug_frame, corners, ids);
+                
+                // Draw axes for each marker
+                for (size_t j = 0; j < ids.size(); j++) {
+                    cv::drawFrameAxes(debug_frame, camera_matrix_, dist_coeffs_, 
+                                      rvecs[j], tvecs[j], marker_size_ * 0.5, 2);
+                }
+                
+                // Add pose text overlay
+                std::stringstream ss;
+                ss << std::fixed << std::setprecision(3);
+                ss << "ID:" << ids[i] << " X:" << smooth_x << " Y:" << smooth_y << " Z:" << smooth_z;
+                cv::putText(debug_frame, ss.str(), cv::Point(10, 30), 
+                           cv::FONT_HERSHEY_SIMPLEX, 0.7, cv::Scalar(0, 255, 0), 2);
+            }
+
         } else {
             // Reset filters if tracking lost
             f_x.reset(); f_y.reset(); f_z.reset();
             f_qx.reset(); f_qy.reset(); f_qz.reset(); f_qw.reset();
+            
+            // Show "No marker" text
+            if (should_publish_debug) {
+                cv::putText(debug_frame, "No marker detected", cv::Point(10, 30), 
+                           cv::FONT_HERSHEY_SIMPLEX, 0.7, cv::Scalar(0, 0, 255), 2);
+            }
+        }
+
+        // Publish debug image
+        if (should_publish_debug) {
+            auto debug_msg = std::make_unique<sensor_msgs::msg::Image>();
+            debug_msg->header = msg->header;
+            debug_msg->height = debug_frame.rows;
+            debug_msg->width = debug_frame.cols;
+            debug_msg->encoding = "bgr8";
+            debug_msg->is_bigendian = false;
+            debug_msg->step = debug_frame.cols * 3;
+            debug_msg->data.assign(debug_frame.data, 
+                                   debug_frame.data + debug_frame.total() * 3);
+            debug_image_pub_->publish(std::move(debug_msg));
         }
     }
 
@@ -229,6 +291,7 @@ private:
     rclcpp::Subscription<sensor_msgs::msg::CameraInfo>::SharedPtr info_sub_;
     rclcpp::Subscription<sensor_msgs::msg::Image>::SharedPtr image_sub_;
     rclcpp::Publisher<geometry_msgs::msg::PoseArray>::SharedPtr pose_pub_;
+    rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr debug_image_pub_;  // NEW
     std::unique_ptr<tf2_ros::TransformBroadcaster> tf_broadcaster_;
 
     // OpenCV
@@ -236,6 +299,7 @@ private:
     cv::Ptr<cv::aruco::DetectorParameters> parameters_;
     cv::Mat camera_matrix_, dist_coeffs_;
     bool has_calibration_ = false;
+    bool publish_debug_ = true;  // NEW
     double marker_size_;
     std::string camera_frame_;
 };

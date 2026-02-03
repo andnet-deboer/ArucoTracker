@@ -5,3 +5,4 @@ aruco_node_cpp:
     aruco_dictionary_id: "DICT_APRILTAG_36h11"
     filter_min_cutoff: 1.0
     filter_beta: 0.05
+    publish_debug_image: true
