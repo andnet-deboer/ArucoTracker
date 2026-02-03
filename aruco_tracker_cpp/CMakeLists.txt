@@ -14,6 +14,7 @@ find_package(tf2_ros REQUIRED)
 find_package(tf2_geometry_msgs REQUIRED)
 find_package(aruco_tracker_msgs REQUIRED)
 find_package(OpenCV REQUIRED)
+find_package(cv_bridge REQUIRED)
 
 add_executable(aruco_node_cpp src/aruco_node.cpp)
 
@@ -33,6 +34,7 @@ ament_target_dependencies(aruco_node_cpp
   tf2_ros
   tf2_geometry_msgs
   aruco_tracker_msgs
+  cv_bridge
 )
 
 # Link OpenCV Manually
