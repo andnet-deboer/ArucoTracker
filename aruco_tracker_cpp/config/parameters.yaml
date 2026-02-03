@@ -1,9 +1,7 @@
 aruco_node_cpp:
   ros__parameters:
-    marker_size: 0.03
+    marker_size: 0.05
+    camera_frame: "head_camera_infra1_optical_frame"
     aruco_dictionary_id: "DICT_APRILTAG_36h11"
-    target_ids: [0, 1, 2, 3, 4, 240, 242, 243, 244, 241]
     filter_min_cutoff: 1.0
     filter_beta: 0.05
-    show_gui: true
-    camera_frame: "head_camera_infra1_optical_frame"

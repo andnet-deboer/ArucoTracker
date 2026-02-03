@@ -9,14 +9,8 @@ import os
 def generate_launch_description():
     pkg_name = 'aruco_tracker_cpp'
     realsense_dir = get_package_share_directory('realsense2_camera')
-    
-    config_path = os.path.join(
-        get_package_share_directory(pkg_name),
-        'config',
-        'parameters.yaml'
-    )
 
-    # RealSense Launch - 90 FPS!
+    # RealSense Launch
     rs_launch = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(os.path.join(realsense_dir, 'launch', 'rs_launch.py')),
         launch_arguments={
@@ -24,42 +18,40 @@ def generate_launch_description():
             'enable_color': 'false',
             'enable_infra1': 'true',
             'enable_depth': 'false',
-            'depth_module.infra_profile': '848x480x90',
-            'depth_module.auto_exposure_priority': 'false',
+            'depth_module.profile': '848x480x90',
+            'infra1.exposure': '2000',
+            'infra1.gain': '90',
         }.items()
     )
 
-    # ArUco Node with config file
+    # Luanch ArUco Node
     tracker_node = Node(
         package=pkg_name,
         executable='aruco_node_cpp',
         name='aruco_node_cpp',
         output='screen',
-        parameters=[config_path],
+        parameters=[{
+            'marker_size': 0.05,
+            'camera_frame': 'head_camera_infra1_optical_frame',
+            'filter_min_cutoff': 1.0,
+            'filter_beta': 0.05
+        }],
         remappings=[
             ('image_raw', '/camera/head_camera/infra1/image_rect_raw'),
             ('camera_info', '/camera/head_camera/infra1/camera_info')
         ]
     )
 
-    # Kill laser emitter after tracker starts
+    # Wait for rs_launch to trigger camera node
     kill_laser = RegisterEventHandler(
         OnProcessStart(
-            target_action=tracker_node,
+            target_action=tracker_node, # Wait for the tracker to start
             on_start=[
                 LogInfo(msg='Stopping RealSense Emitter...'),
                 ExecuteProcess(
                     cmd=['ros2', 'param', 'set', '/camera/head_camera', 'depth_module.emitter_enabled', '0'],
                     output='screen'
-                ),
-                ExecuteProcess(
-                    cmd=['ros2', 'param', 'set', '/camera/head_camera', 'depth_module.exposure', '80000'],
-                    output='screen'
-                ),
-                ExecuteProcess(
-                    cmd=['ros2', 'param', 'set', '/camera/head_camera', 'depth_module.gain', '90'],
-                    output='screen'
-                ),
+                )
             ]
         )
     )

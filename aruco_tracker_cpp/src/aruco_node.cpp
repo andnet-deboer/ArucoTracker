@@ -8,13 +8,10 @@
 #include <opencv2/opencv.hpp>
 #include <opencv2/aruco.hpp>
 #include <map>
-#include <vector>
-#include <algorithm>
-#include <string>
 
 using std::placeholders::_1;
 
-// --- 1 EURO FILTER CLASS ---
+// EURO FILTER
 class OneEuroFilter {
 public:
     OneEuroFilter(double min_cutoff = 1.0, double beta = 0.0) 
@@ -35,6 +32,7 @@ public:
         dx_prev_ = dx_hat;
         return x_hat;
     }
+
     void reset() { initialized_ = false; }
 
 private:
@@ -42,43 +40,51 @@ private:
         double tau = 1.0 / (2.0 * M_PI * cutoff);
         return 1.0 / (1.0 + tau / dt);
     }
+
     double exponentialSmoothing(double current, double prev, double alpha) {
         return alpha * current + (1.0 - alpha) * prev;
     }
-    double min_cutoff_, beta_, d_cutoff_, x_prev_, dx_prev_;
-    bool initialized_;
-};
 
-struct MarkerFilter {
-    OneEuroFilter x, y, z, qx, qy, qz, qw;
-    MarkerFilter(double mc, double b) : x(mc,b), y(mc,b), z(mc,b), qx(mc,b), qy(mc,b), qz(mc,b), qw(mc,b) {}
+    double min_cutoff_, beta_, d_cutoff_;
+    double x_prev_, dx_prev_;
+    bool initialized_;
 };
 
 class ArucoNodeCpp : public rclcpp::Node {
 public:
     ArucoNodeCpp() : Node("aruco_node_cpp") {
-        // 1. Declare Parameters
+        // Parameters
         this->declare_parameter("marker_size", 0.05);
-        this->declare_parameter("target_ids", std::vector<long int>{0, 1, 2, 3, 4}); 
+        this->declare_parameter("camera_frame", "head_camera_infra1_optical_frame");
         this->declare_parameter("aruco_dictionary_id", "DICT_APRILTAG_36h11");
         this->declare_parameter("filter_min_cutoff", 1.0);
         this->declare_parameter("filter_beta", 0.05);
-        this->declare_parameter("show_gui", true);
-        this->declare_parameter("camera_frame", "head_camera_infra1_optical_frame");
 
-        // 2. Fetch Parameters
         marker_size_ = this->get_parameter("marker_size").as_double();
-        target_ids_ = this->get_parameter("target_ids").as_integer_array();
-        min_c_ = this->get_parameter("filter_min_cutoff").as_double();
-        beta_ = this->get_parameter("filter_beta").as_double();
-        show_gui_ = this->get_parameter("show_gui").as_bool();
         camera_frame_ = this->get_parameter("camera_frame").as_string();
         std::string dict_name = this->get_parameter("aruco_dictionary_id").as_string();
+        
+        double min_c = this->get_parameter("filter_min_cutoff").as_double();
+        double beta = this->get_parameter("filter_beta").as_double();
 
-        // 3. Dictionary Selection Logic
+        // Initialize Filters
+        f_x = OneEuroFilter(min_c, beta);
+        f_y = OneEuroFilter(min_c, beta);
+        f_z = OneEuroFilter(min_c, beta);
+        f_qx = OneEuroFilter(min_c, beta);
+        f_qy = OneEuroFilter(min_c, beta);
+        f_qz = OneEuroFilter(min_c, beta);
+        f_qw = OneEuroFilter(min_c, beta);
+
+        // Dictionary Selection
         std::map<std::string, cv::aruco::PREDEFINED_DICTIONARY_NAME> dict_map = {
             {"DICT_4X4_50", cv::aruco::DICT_4X4_50},
+            {"DICT_4X4_100", cv::aruco::DICT_4X4_100},
+            {"DICT_5X5_50", cv::aruco::DICT_5X5_50},
+            {"DICT_5X5_100", cv::aruco::DICT_5X5_100},
+            {"DICT_6X6_50", cv::aruco::DICT_6X6_50},
             {"DICT_6X6_250", cv::aruco::DICT_6X6_250},
+            {"DICT_7X7_50", cv::aruco::DICT_7X7_50},
             {"DICT_APRILTAG_16h5", cv::aruco::DICT_APRILTAG_16h5},
             {"DICT_APRILTAG_25h9", cv::aruco::DICT_APRILTAG_25h9},
             {"DICT_APRILTAG_36h10", cv::aruco::DICT_APRILTAG_36h10},
@@ -89,20 +95,15 @@ public:
             dictionary_ = cv::aruco::getPredefinedDictionary(dict_map[dict_name]);
             RCLCPP_INFO(this->get_logger(), "Initialized with Dictionary: %s", dict_name.c_str());
         } else {
-            RCLCPP_ERROR(this->get_logger(), "Invalid Dictionary: %s. Defaulting to 6X6_250", dict_name.c_str());
-            dictionary_ = cv::aruco::getPredefinedDictionary(cv::aruco::DICT_6X6_250);
+            RCLCPP_ERROR(this->get_logger(), "Invalid Dictionary: %s. Defaulting to APRILTAG_36h11", dict_name.c_str());
+            dictionary_ = cv::aruco::getPredefinedDictionary(cv::aruco::DICT_APRILTAG_36h11);
         }
 
         parameters_ = cv::aruco::DetectorParameters::create();
-        // SUBPIX is highly recommended for AprilTags to get accurate pose
-        parameters_->cornerRefinementMethod = cv::aruco::CORNER_REFINE_SUBPIX;
+        // Use CONTOUR instead of SUBPIX for speed (still accurate for AprilTags)
+        parameters_->cornerRefinementMethod = cv::aruco::CORNER_REFINE_CONTOUR;
 
-        if (show_gui_) {
-            cv::namedWindow("Filtered Tracker", cv::WINDOW_NORMAL);
-            cv::startWindowThread();
-        }
-
-        // 4. ROS Communication
+        // ROS Communication
         auto qos = rclcpp::SensorDataQoS();
         info_sub_ = this->create_subscription<sensor_msgs::msg::CameraInfo>(
             "camera_info", qos, std::bind(&ArucoNodeCpp::info_callback, this, _1));
@@ -111,10 +112,8 @@ public:
 
         pose_pub_ = this->create_publisher<geometry_msgs::msg::PoseArray>("aruco_poses", 10);
         tf_broadcaster_ = std::make_unique<tf2_ros::TransformBroadcaster>(*this);
-    }
 
-    ~ArucoNodeCpp() {
-        if (show_gui_) cv::destroyAllWindows();
+        RCLCPP_INFO(this->get_logger(), "C++ Tracker + 1Euro Filter Ready.");
     }
 
 private:
@@ -130,109 +129,120 @@ private:
     void image_callback(const sensor_msgs::msg::Image::SharedPtr msg) {
         if (!has_calibration_) return;
 
+        // Calculate Delta Time
         rclcpp::Time current_time = msg->header.stamp;
-        if (last_time_.nanoseconds() == 0) { last_time_ = current_time; return; }
+        if (last_time_.nanoseconds() == 0) {
+            last_time_ = current_time;
+            return;
+        }
         double dt = (current_time - last_time_).seconds();
         last_time_ = current_time;
         if (dt <= 0) dt = 1.0/90.0;
 
+        // Decode Image (zero-copy for mono8)
         cv::Mat frame;
         if (msg->encoding == "mono8") {
-            frame = cv::Mat(msg->height, msg->width, CV_8UC1, const_cast<unsigned char*>(msg->data.data()), msg->step);
+            frame = cv::Mat(msg->height, msg->width, CV_8UC1, 
+                const_cast<unsigned char*>(msg->data.data()), msg->step);
         } else {
-            cv::Mat raw(msg->height, msg->width, CV_8UC3, const_cast<unsigned char*>(msg->data.data()), msg->step);
+            cv::Mat raw(msg->height, msg->width, CV_8UC3, 
+                const_cast<unsigned char*>(msg->data.data()), msg->step);
             if (msg->encoding == "rgb8") cv::cvtColor(raw, frame, cv::COLOR_RGB2BGR);
             else frame = raw;
         }
 
+        // Detect
         std::vector<int> ids;
         std::vector<std::vector<cv::Point2f>> corners;
         cv::aruco::detectMarkers(frame, dictionary_, corners, ids, parameters_);
 
-        auto pose_array = geometry_msgs::msg::PoseArray();
-        pose_array.header = msg->header;
+        if (ids.size() > 0) {
+            std::vector<cv::Vec3d> rvecs, tvecs;
+            cv::aruco::estimatePoseSingleMarkers(corners, marker_size_, camera_matrix_, dist_coeffs_, rvecs, tvecs);
 
-        for (size_t k = 0; k < ids.size(); ++k) {
-            int id = ids[k];
-            if (std::find(target_ids_.begin(), target_ids_.end(), id) != target_ids_.end()) {
-                
-                if (filter_bank_.find(id) == filter_bank_.end()) {
-                    filter_bank_.emplace(id, std::make_unique<MarkerFilter>(min_c_, beta_));
-                }
-                auto& f = filter_bank_.at(id);
+            auto pose_array = geometry_msgs::msg::PoseArray();
+            pose_array.header = msg->header;
 
-                std::vector<cv::Vec3d> rvecs, tvecs;
-                std::vector<std::vector<cv::Point2f>> single_set = {corners[k]};
-                cv::aruco::estimatePoseSingleMarkers(single_set, marker_size_, camera_matrix_, dist_coeffs_, rvecs, tvecs);
+            // Process first marker
+            size_t i = 0;
 
-                cv::Mat rot_matrix;
-                cv::Rodrigues(rvecs[0], rot_matrix);
-                tf2::Matrix3x3 tf2_rot(
-                    rot_matrix.at<double>(0,0), rot_matrix.at<double>(0,1), rot_matrix.at<double>(0,2),
-                    rot_matrix.at<double>(1,0), rot_matrix.at<double>(1,1), rot_matrix.at<double>(1,2),
-                    rot_matrix.at<double>(2,0), rot_matrix.at<double>(2,1), rot_matrix.at<double>(2,2)
-                );
-                tf2::Quaternion q; tf2_rot.getRotation(q);
+            double raw_x = tvecs[i][0];
+            double raw_y = tvecs[i][1];
+            double raw_z = tvecs[i][2];
 
-                double sx = f->x.filter(tvecs[0][0], dt);
-                double sy = f->y.filter(tvecs[0][1], dt);
-                double sz = f->z.filter(tvecs[0][2], dt);
-                double sqx = f->qx.filter(q.x(), dt);
-                double sqy = f->qy.filter(q.y(), dt);
-                double sqz = f->qz.filter(q.z(), dt);
-                double sqw = f->qw.filter(q.w(), dt);
-                tf2::Quaternion sq(sqx, sqy, sqz, sqw); sq.normalize();
+            cv::Mat rot_matrix;
+            cv::Rodrigues(rvecs[i], rot_matrix);
+            tf2::Matrix3x3 tf2_rot(
+                rot_matrix.at<double>(0,0), rot_matrix.at<double>(0,1), rot_matrix.at<double>(0,2),
+                rot_matrix.at<double>(1,0), rot_matrix.at<double>(1,1), rot_matrix.at<double>(1,2),
+                rot_matrix.at<double>(2,0), rot_matrix.at<double>(2,1), rot_matrix.at<double>(2,2)
+            );
+            tf2::Quaternion q;
+            tf2_rot.getRotation(q);
 
-                geometry_msgs::msg::Pose p;
-                p.position.x = sx; p.position.y = sy; p.position.z = sz;
-                p.orientation.x = sq.x(); p.orientation.y = sq.y(); p.orientation.z = sq.z(); p.orientation.w = sq.w();
-                pose_array.poses.push_back(p);
+            // Filter
+            double smooth_x = f_x.filter(raw_x, dt);
+            double smooth_y = f_y.filter(raw_y, dt);
+            double smooth_z = f_z.filter(raw_z, dt);
+            double smooth_qx = f_qx.filter(q.x(), dt);
+            double smooth_qy = f_qy.filter(q.y(), dt);
+            double smooth_qz = f_qz.filter(q.z(), dt);
+            double smooth_qw = f_qw.filter(q.w(), dt);
 
-                geometry_msgs::msg::TransformStamped t;
-                t.header = msg->header;
-                t.child_frame_id = "marker_" + std::to_string(id);
-                t.transform.translation.x = sx; t.transform.translation.y = sy; t.transform.translation.z = sz;
-                t.transform.rotation = p.orientation;
-                tf_broadcaster_->sendTransform(t);
+            tf2::Quaternion smooth_q(smooth_qx, smooth_qy, smooth_qz, smooth_qw);
+            smooth_q.normalize();
 
-                if (show_gui_) {
-                    if (frame.channels() == 1) cv::cvtColor(frame, frame, cv::COLOR_GRAY2BGR);
-                    cv::drawFrameAxes(frame, camera_matrix_, dist_coeffs_, rvecs[0], tvecs[0], marker_size_);
-                }
-            }
-        }
+            // Publish PoseArray
+            geometry_msgs::msg::Pose pose;
+            pose.position.x = smooth_x;
+            pose.position.y = smooth_y;
+            pose.position.z = smooth_z;
+            pose.orientation.x = smooth_q.x();
+            pose.orientation.y = smooth_q.y();
+            pose.orientation.z = smooth_q.z();
+            pose.orientation.w = smooth_q.w();
+            pose_array.poses.push_back(pose);
+            pose_pub_->publish(pose_array);
 
-        if (!pose_array.poses.empty()) pose_pub_->publish(pose_array);
+            // Publish TF
+            geometry_msgs::msg::TransformStamped t;
+            t.header = msg->header;
+            t.child_frame_id = "aruco_" + std::to_string(ids[i]);
+            t.transform.translation.x = smooth_x;
+            t.transform.translation.y = smooth_y;
+            t.transform.translation.z = smooth_z;
+            t.transform.rotation = pose.orientation;
+            tf_broadcaster_->sendTransform(t);
 
-        if (show_gui_) {
-            cv::Mat dst_image;
-            cv::rotate(frame, dst_image, cv::ROTATE_90_CLOCKWISE);
-            cv::imshow("Filtered Tracker", dst_image);
-            cv::waitKey(1);
+        } else {
+            // Reset filters if tracking lost
+            f_x.reset(); f_y.reset(); f_z.reset();
+            f_qx.reset(); f_qy.reset(); f_qz.reset(); f_qw.reset();
         }
     }
 
-    std::vector<long int> target_ids_;
-    double marker_size_, min_c_, beta_;
-    bool show_gui_;
-    std::string camera_frame_;
-    std::map<int, std::unique_ptr<MarkerFilter>> filter_bank_;
+    // Filters
+    OneEuroFilter f_x, f_y, f_z, f_qx, f_qy, f_qz, f_qw;
     rclcpp::Time last_time_;
-    bool has_calibration_ = false;
-    cv::Mat camera_matrix_, dist_coeffs_;
-    cv::Ptr<cv::aruco::Dictionary> dictionary_;
-    cv::Ptr<cv::aruco::DetectorParameters> parameters_;
 
+    // ROS
     rclcpp::Subscription<sensor_msgs::msg::CameraInfo>::SharedPtr info_sub_;
     rclcpp::Subscription<sensor_msgs::msg::Image>::SharedPtr image_sub_;
     rclcpp::Publisher<geometry_msgs::msg::PoseArray>::SharedPtr pose_pub_;
     std::unique_ptr<tf2_ros::TransformBroadcaster> tf_broadcaster_;
+
+    // OpenCV
+    cv::Ptr<cv::aruco::Dictionary> dictionary_;
+    cv::Ptr<cv::aruco::DetectorParameters> parameters_;
+    cv::Mat camera_matrix_, dist_coeffs_;
+    bool has_calibration_ = false;
+    double marker_size_;
+    std::string camera_frame_;
 };
 
 int main(int argc, char** argv) {
     rclcpp::init(argc, argv);
-    auto node = std::make_shared<ArucoNodeCpp>();
-    rclcpp::spin(node);
+    rclcpp::spin(std::make_shared<ArucoNodeCpp>());
     rclcpp::shutdown();
     return 0;
 }
