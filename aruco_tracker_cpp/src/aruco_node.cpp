@@ -9,6 +9,7 @@
 #include <opencv2/aruco.hpp>
 #include <cv_bridge/cv_bridge.h>
 #include <map>
+#include <algorithm>
 
 using std::placeholders::_1;
 
@@ -53,15 +54,15 @@ public:
         this->declare_parameter("publish_debug", false);
         this->declare_parameter("camera_frame", "head_camera_infra1_optical_frame");
         this->declare_parameter("aruco_dictionary_id", "DICT_APRILTAG_36h11");
-        this->declare_parameter("filter_min_cutoff", 1.0);
-        this->declare_parameter("filter_beta", 0.05);
+        this->declare_parameter("filter_min_cutoff", 0.5);
+        this->declare_parameter("filter_beta", 0.3);
 
         marker_size_ = this->get_parameter("marker_size").as_double();
         publish_debug_ = this->get_parameter("publish_debug").as_bool();
         camera_frame_ = this->get_parameter("camera_frame").as_string();
         std::string dict_id = this->get_parameter("aruco_dictionary_id").as_string();
-        double min_c = this->get_parameter("filter_min_cutoff").as_double();
-        double beta = this->get_parameter("filter_beta").as_double();
+        filter_min_cutoff_ = this->get_parameter("filter_min_cutoff").as_double();
+        filter_beta_ = this->get_parameter("filter_beta").as_double();
 
         // 2. Map Dictionary ID string to OpenCV enum
         std::map<std::string, cv::aruco::PREDEFINED_DICTIONARY_NAME> dict_map = {
@@ -80,12 +81,8 @@ public:
         }
 
         parameters_ = cv::aruco::DetectorParameters::create();
-        
-        // 3. Initialize Filters
-        f_x = OneEuroFilter(min_c, beta); f_y = OneEuroFilter(min_c, beta); f_z = OneEuroFilter(min_c, beta);
-        f_qx = OneEuroFilter(min_c, beta); f_qy = OneEuroFilter(min_c, beta); f_qz = OneEuroFilter(min_c, beta); f_qw = OneEuroFilter(min_c, beta);
 
-        // 4. ROS Comms
+        // 3. ROS Comms
         auto qos = rclcpp::SensorDataQoS();
         info_sub_ = this->create_subscription<sensor_msgs::msg::CameraInfo>(
             "camera_info", qos, std::bind(&ArucoNodeCpp::info_callback, this, _1));
@@ -97,6 +94,8 @@ public:
         tf_broadcaster_ = std::make_unique<tf2_ros::TransformBroadcaster>(*this);
 
         RCLCPP_INFO(this->get_logger(), "Aruco Node Ready. Frame: %s", camera_frame_.c_str());
+        RCLCPP_INFO(this->get_logger(), "Filter params - min_cutoff: %.2f, beta: %.2f", 
+                    filter_min_cutoff_, filter_beta_);
     }
 
 private:
@@ -130,42 +129,107 @@ private:
             std::vector<cv::Vec3d> rvecs, tvecs;
             cv::aruco::estimatePoseSingleMarkers(corners, marker_size_, camera_matrix_, dist_coeffs_, rvecs, tvecs);
 
-            // Filter first marker
-            double sx = f_x.filter(tvecs[0][0], dt);
-            double sy = f_y.filter(tvecs[0][1], dt);
-            double sz = f_z.filter(tvecs[0][2], dt);
+            // Choose which marker to track (prefer the previous one if still visible)
+            int track_idx = 0;
+            if (primary_marker_id_ != -1) {
+                auto it = std::find(ids.begin(), ids.end(), primary_marker_id_);
+                if (it != ids.end()) {
+                    track_idx = std::distance(ids.begin(), it);
+                } else {
+                    // Primary marker lost, switch to new marker and reset its filters
+                    primary_marker_id_ = ids[0];
+                    RCLCPP_DEBUG(this->get_logger(), "Switched to marker ID: %d", primary_marker_id_);
+                }
+            } else {
+                primary_marker_id_ = ids[0];
+                RCLCPP_INFO(this->get_logger(), "Initial marker lock: ID %d", primary_marker_id_);
+            }
 
-            cv::Mat rot; cv::Rodrigues(rvecs[0], rot);
+            int current_id = ids[track_idx];
+            
+            // Initialize filters for this marker if needed
+            if (filters_x_.find(current_id) == filters_x_.end()) {
+                filters_x_[current_id] = OneEuroFilter(filter_min_cutoff_, filter_beta_);
+                filters_y_[current_id] = OneEuroFilter(filter_min_cutoff_, filter_beta_);
+                filters_z_[current_id] = OneEuroFilter(filter_min_cutoff_, filter_beta_);
+                filters_qx_[current_id] = OneEuroFilter(filter_min_cutoff_, filter_beta_);
+                filters_qy_[current_id] = OneEuroFilter(filter_min_cutoff_, filter_beta_);
+                filters_qz_[current_id] = OneEuroFilter(filter_min_cutoff_, filter_beta_);
+                filters_qw_[current_id] = OneEuroFilter(filter_min_cutoff_, filter_beta_);
+            }
+
+            // Filter position
+            double sx = filters_x_[current_id].filter(tvecs[track_idx][0], dt);
+            double sy = filters_y_[current_id].filter(tvecs[track_idx][1], dt);
+            double sz = filters_z_[current_id].filter(tvecs[track_idx][2], dt);
+
+            // Filter rotation
+            cv::Mat rot; 
+            cv::Rodrigues(rvecs[track_idx], rot);
             tf2::Matrix3x3 tf2_rot(rot.at<double>(0,0), rot.at<double>(0,1), rot.at<double>(0,2),
                                    rot.at<double>(1,0), rot.at<double>(1,1), rot.at<double>(1,2),
                                    rot.at<double>(2,0), rot.at<double>(2,1), rot.at<double>(2,2));
-            tf2::Quaternion q; tf2_rot.getRotation(q);
+            tf2::Quaternion q; 
+            tf2_rot.getRotation(q);
             
-            tf2::Quaternion sq(f_qx.filter(q.x(), dt), f_qy.filter(q.y(), dt), f_qz.filter(q.z(), dt), f_qw.filter(q.w(), dt));
+            tf2::Quaternion sq(
+                filters_qx_[current_id].filter(q.x(), dt),
+                filters_qy_[current_id].filter(q.y(), dt),
+                filters_qz_[current_id].filter(q.z(), dt),
+                filters_qw_[current_id].filter(q.w(), dt)
+            );
             sq.normalize();
 
-            // Broadcast TF
+            // Broadcast TF for the tracked marker
             geometry_msgs::msg::TransformStamped t;
             t.header.stamp = now;
-            t.header.frame_id = camera_frame_; // Using the param from YAML
-            t.child_frame_id = "aruco_" + std::to_string(ids[0]);
-            t.transform.translation.x = sx; t.transform.translation.y = sy; t.transform.translation.z = sz;
-            t.transform.rotation.x = sq.x(); t.transform.rotation.y = sq.y(); t.transform.rotation.z = sq.z(); t.transform.rotation.w = sq.w();
+            t.header.frame_id = camera_frame_;
+            t.child_frame_id = "aruco_" + std::to_string(current_id);
+            t.transform.translation.x = sx; 
+            t.transform.translation.y = sy; 
+            t.transform.translation.z = sz;
+            t.transform.rotation.x = sq.x(); 
+            t.transform.rotation.y = sq.y(); 
+            t.transform.rotation.z = sq.z(); 
+            t.transform.rotation.w = sq.w();
             tf_broadcaster_->sendTransform(t);
+        } else {
+            // No markers detected, reset primary marker
+            if (primary_marker_id_ != -1) {
+                RCLCPP_DEBUG(this->get_logger(), "Lost all markers");
+                primary_marker_id_ = -1;
+            }
         }
 
+        // Debug visualization
         if (publish_debug_ && debug_pub_->get_subscription_count() > 0) {
             cv::Mat debug_frame;
             if(frame.channels() == 1) cv::cvtColor(frame, debug_frame, cv::COLOR_GRAY2BGR);
             else debug_frame = frame.clone();
 
             cv::aruco::drawDetectedMarkers(debug_frame, corners, ids);
+            
+            // Highlight the tracked marker
+            if (primary_marker_id_ != -1 && !ids.empty()) {
+                auto it = std::find(ids.begin(), ids.end(), primary_marker_id_);
+                if (it != ids.end()) {
+                    int idx = std::distance(ids.begin(), it);
+                    cv::circle(debug_frame, corners[idx][0], 10, cv::Scalar(0, 255, 0), 3);
+                    cv::putText(debug_frame, "TRACKED", corners[idx][0] + cv::Point2f(15, 0),
+                                cv::FONT_HERSHEY_SIMPLEX, 0.6, cv::Scalar(0, 255, 0), 2);
+                }
+            }
+            
             auto debug_msg = cv_bridge::CvImage(msg->header, "bgr8", debug_frame).toImageMsg();
             debug_pub_->publish(*debug_msg);
         }
     }
 
-    OneEuroFilter f_x, f_y, f_z, f_qx, f_qy, f_qz, f_qw;
+    // Per-marker filters
+    std::map<int, OneEuroFilter> filters_x_, filters_y_, filters_z_;
+    std::map<int, OneEuroFilter> filters_qx_, filters_qy_, filters_qz_, filters_qw_;
+    int primary_marker_id_ = -1;
+    
     rclcpp::Time last_time_;
     rclcpp::Subscription<sensor_msgs::msg::CameraInfo>::SharedPtr info_sub_;
     rclcpp::Subscription<sensor_msgs::msg::Image>::SharedPtr image_sub_;
@@ -177,6 +241,7 @@ private:
     cv::Mat camera_matrix_, dist_coeffs_;
     bool has_calibration_ = false, publish_debug_;
     double marker_size_;
+    double filter_min_cutoff_, filter_beta_;
     std::string camera_frame_;
 };
 

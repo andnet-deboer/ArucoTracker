@@ -67,7 +67,7 @@ def generate_launch_description():
                 ),
                 # Disable auto-exposure first so manual values take effect
                 ExecuteProcess(
-                    cmd=['ros2', 'param', 'set', '/camera/head_camera', 'depth_module.enable_auto_exposure', 'false'],
+                    cmd=['ros2', 'param', 'set', '/camera/head_camera', 'depth_module.enable_auto_exposure', 'true'],
                     output='screen'
                 ),
                 # 10ms exposure is the limit for 90Hz (1/90 = 11.1ms)
